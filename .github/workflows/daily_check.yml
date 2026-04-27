@@ -1,0 +1,47 @@
+name: Daily IPTV Stream Check
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 每天 UTC 02:00（北京时间 10:00）自动运行
+  workflow_dispatch:        # 支持在 GitHub 页面手动触发
+
+permissions:
+  contents: write           # 允许 workflow 将结果提交回仓库
+
+jobs:
+  check-streams:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300    # 最长运行 5 小时，防止卡死
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Run stream checker
+        run: python main.py 50 4
+
+      - name: Commit and push results
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add output/
+          if git diff --staged --quiet; then
+            echo "No changes to commit, all done."
+          else
+            git commit -m "chore: auto update stream check results $(date +'%Y-%m-%d')"
+            git push
+          fi
