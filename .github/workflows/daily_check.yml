@@ -1,8 +1,6 @@
 name: Daily IPTV Stream Check
 
 on:
-  schedule:
-    - cron: '0 2 * * *'   # 每天 UTC 02:00（北京时间 10:00）自动运行
   workflow_dispatch:        # 支持在 GitHub 页面手动触发
 
 permissions:
