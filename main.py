@@ -6,6 +6,11 @@ import os
 import encodings.idna
 import random
 import sys
+import shutil
+import urllib.request
+import zipfile
+import json
+import requests
 from fake_useragent import UserAgent
 
 
@@ -17,6 +22,41 @@ filter_url_arr = ['122.152.202.33','cnstream.top','goodiptv','jlntv','zjrtv.vip'
 'gcalic.v.myalicdn.com/gc/','gctxyc.liveplay.myqcloud.com','bizcommon.alicdn.com','dd.ddzb.fun'] # 剔除一些特定的直播源，因它们不是开放的静态直播源，或者其他一些不想要的
 
 filter_url_arr_1 = ['live.metshop.top'] # 针对斗鱼，虎牙的直播源做特殊过滤，仅保留电影相关的
+
+# 外部公开直播源聚合地址（GitHub 知名 IPTV 仓库 + 其他聚合站）
+EXTERNAL_SOURCE_URLS = [
+    # 直播电视IPV4
+    "https://live.zbds.top/tv/iptv4.txt",
+    # Meroser IPTV
+    "https://raw.githubusercontent.com/Meroser/IPTV/main/IPTV.m3u",
+    # YueChan Live
+    "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
+    # joevess IPTV
+    "https://raw.githubusercontent.com/joevess/IPTV/main/home.m3u8",
+    # suxuang myIPTV
+    "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u",
+    # kimwang collect-tv-txt（txt 格式）
+    "https://raw.githubusercontent.com/kimwang1978/collect-tv-txt/main/merged_output.txt",
+    # vbskycn iptv
+    "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
+    "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv6.m3u",
+    # ssili126 tv
+    "https://raw.githubusercontent.com/ssili126/tv/main/iptv.m3u",
+    # qist tvbox
+    "https://raw.githubusercontent.com/qist/tvbox/master/iptv/iptv.m3u",
+    # zbefine iptv
+    "https://raw.githubusercontent.com/zbefine/iptv/main/iptv.m3u",
+    # mengxh myIPTV（txt 格式）
+    "https://raw.githubusercontent.com/mengxh1990/myIPTV/master/live.txt",
+    # iptv-org 中国区频道
+    "https://iptv-org.github.io/iptv/countries/cn.m3u",
+    # Ftindy IPTV-URL
+    "https://raw.githubusercontent.com/Ftindy/IPTV-URL/main/huyafenxi.m3u",
+    # 台湾/港澳卫星
+    "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u",
+    # liuchenyang IPTV（含央视/卫视/地方台）
+    "https://raw.githubusercontent.com/liuchenyang0515/IPTV/main/IPTV.m3u",
+]
 
 max_workers = 8  # 测试直播源的线程数量。线程数太多，容易被屏蔽请求
 
@@ -42,6 +82,81 @@ max_width = 2000 # 分辨率宽度超过{max_width}，容易卡顿，剔除掉
 
 print(f"max_workers: {max_workers}")
 print(f"timeout: {timeout}")
+
+def check_and_setup_ffmpeg():
+    """
+    检测 ffmpeg 是否可用。
+    - 若在 PATH 中找到，直接返回。
+    - 若在脚本同目录下找到 ffmpeg / ffmpeg.exe，将该目录加入 PATH 后返回。
+    - 若都没有：
+        Linux/macOS：尝试 apt-get 安装。
+        Windows    ：从 BtbN/FFmpeg-Builds 下载静态构建并解压到项目目录。
+    """
+    # 1. 检查 PATH 里是否有 ffmpeg
+    if shutil.which("ffmpeg") is not None:
+        print("[ffmpeg] Found in PATH, ready to use.")
+        return
+
+    # 2. 检查项目目录下是否已有 ffmpeg 可执行文件
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    local_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    local_path = os.path.join(script_dir, local_name)
+
+    if os.path.isfile(local_path):
+        print(f"[ffmpeg] Found locally at: {local_path}")
+        os.environ["PATH"] = script_dir + os.pathsep + os.environ.get("PATH", "")
+        return
+
+    print("[ffmpeg] Not found, attempting to install / download ...")
+
+    # 3a. Linux / macOS —— apt-get 安装
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        for cmd_prefix in [["sudo", "apt-get"], ["apt-get"]]:
+            try:
+                subprocess.run(
+                    cmd_prefix + ["install", "-y", "ffmpeg"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                print("[ffmpeg] Installed via apt-get.")
+                return
+            except Exception as e:
+                print(f"[ffmpeg] apt-get attempt failed: {e}")
+        print("[ffmpeg] ERROR: Could not install ffmpeg automatically. Please install it manually.")
+        sys.exit(1)
+
+    # 3b. Windows —— 下载静态构建包并解压
+    elif sys.platform == "win32":
+        zip_url = (
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
+            "ffmpeg-master-latest-win64-lgpl.zip"
+        )
+        zip_path = os.path.join(script_dir, "_ffmpeg_download.zip")
+        try:
+            print(f"[ffmpeg] Downloading from {zip_url} ...")
+            urllib.request.urlretrieve(zip_url, zip_path)
+            print("[ffmpeg] Download complete, extracting ffmpeg.exe ...")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                for name in zf.namelist():
+                    # 包内路径类似 ffmpeg-xxx/bin/ffmpeg.exe
+                    if name.endswith("bin/ffmpeg.exe"):
+                        data = zf.read(name)
+                        with open(local_path, "wb") as f_out:
+                            f_out.write(data)
+                        print(f"[ffmpeg] Extracted to: {local_path}")
+                        break
+            os.remove(zip_path)
+            os.environ["PATH"] = script_dir + os.pathsep + os.environ.get("PATH", "")
+            print("[ffmpeg] Ready.")
+        except Exception as e:
+            print(f"[ffmpeg] ERROR: Failed to download/extract ffmpeg: {e}")
+            print("[ffmpeg] Please download ffmpeg manually and place ffmpeg.exe in the project folder.")
+            sys.exit(1)
+    else:
+        print(f"[ffmpeg] Unsupported platform: {sys.platform}. Please install ffmpeg manually.")
+        sys.exit(1)
+
 
 def get_fake_User_Agent():
     ua = UserAgent()
@@ -235,7 +350,77 @@ def get_tv_name(line, isHandle):
             return "Unknown"
 
 
+def fetch_external_sources():
+    """
+    从 EXTERNAL_SOURCE_URLS 中抓取公开直播源列表，返回 [(url, tv_name), ...] 。
+    支持 M3U / M3U8 和 TXT（"频道名,URL" 格式）两种格式，自动根据内容判断。
+    """
+    fetched = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; StreamChecker/1.0)",
+        "Accept": "*/*",
+    }
+
+    for source_url in EXTERNAL_SOURCE_URLS:
+        try:
+            print(f"[fetch] Fetching external source: {source_url}")
+            resp = requests.get(source_url, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                print(f"[fetch] HTTP {resp.status_code} for {source_url}, skipping.")
+                continue
+
+            content = resp.text
+            lines = content.splitlines()
+
+            # 根据内容首行判断格式：M3U 还是 TXT
+            is_m3u = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped:
+                    is_m3u = stripped.startswith("#EXTM3U") or stripped.startswith("#EXTINF")
+                    break
+
+            count_before = len(fetched)
+
+            if is_m3u:
+                total = len(lines)
+                for i in range(total):
+                    if lines[i].startswith("#EXTINF:-1") or lines[i].startswith("#EXTINF:"):
+                        tv_name = get_tv_name(lines[i], True)
+                        if i + 1 < total:
+                            url = lines[i + 1].strip()
+                            if url.startswith("http"):
+                                fetched.append((url, tv_name))
+            else:
+                # TXT 格式："频道名,URL" 或 "频道名,URL1#URL2"
+                for line in lines:
+                    if (line.find("http:") != -1 or line.find("https:") != -1) and line.find(",") != -1:
+                        arr = line.split(",")
+                        tv_name = arr[0].strip()
+                        url_part = arr[1].strip()
+                        if url_part.find("#") != -1:
+                            for u in url_part.split("#"):
+                                u = u.strip()
+                                if u.startswith("http"):
+                                    fetched.append((u, tv_name))
+                        else:
+                            if url_part.startswith("http"):
+                                fetched.append((url_part, tv_name))
+
+            added = len(fetched) - count_before
+            print(f"[fetch] Added {added} URLs from {source_url}")
+
+        except Exception as e:
+            print(f"[fetch] Error fetching {source_url}: {e}")
+
+    print(f"[fetch] Total external URLs fetched: {len(fetched)}")
+    return fetched
+
+
 def main(playlist_file, m3u8_file_path):
+
+    # 检测并安装/下载 ffmpeg
+    check_and_setup_ffmpeg()
 
     output_file = (
         m3u8_file_path + time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime()) + ".m3u"
@@ -247,6 +432,13 @@ def main(playlist_file, m3u8_file_path):
     urls = []
     idx = 0
 
+    # ── 1. 抓取外部公开直播源 ──────────────────────────────────────────────────
+    external_urls = fetch_external_sources()
+    for url, tv_name in external_urls:
+        idx += 1
+        urls.append((url, tv_name, idx))
+
+    # ── 2. 读取本地 playlists/ 目录下的文件 ────────────────────────────────────
     for file_name in os.listdir(playlist_file):
 
         print(f"file_name: {file_name}")

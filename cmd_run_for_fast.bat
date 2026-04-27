@@ -1,2 +1,2 @@
-python main.py 30 4
+python main.py 50 4
 pause
